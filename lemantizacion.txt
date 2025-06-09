@@ -1,0 +1,98 @@
+from thefuzz import fuzz
+import re
+
+# --- Las funciones de ayuda y las listas de claves se mantienen ---
+def limpiar_y_convertir_monto(texto_monto):
+    if not texto_monto: return None
+    texto_limpio = texto_monto.lower()
+    reemplazos = {'o': '0', 'l': '1', 's': '5', 'b': '8'}
+    for letra, numero in reemplazos.items():
+        texto_limpio = texto_limpio.replace(letra, numero)
+    texto_limpio = re.sub(r'[^\d.]', '', texto_limpio)
+    try:
+        return float(texto_limpio)
+    except (ValueError, TypeError):
+        return None
+
+def es_monto_potencial(texto_token):
+    if re.search(r'\d', texto_token):
+        return True
+    return False
+
+DEPOSITO_KEYS = ["depositos", "deposito", "abonos", "abono", "ingresos", "ingreso"]
+RETIRO_KEYS = ["retiros", "retiro", "cargos", "cargo", "egresos", "egreso", "compra"]
+SIMILARITY_THRESHOLD = 65
+
+# --- PASO 1: CREAMOS NUESTRO PROPIO TOKENIZADOR SIMPLE ---
+def tokenizar_texto_simple(texto):
+    """
+    Divide un texto en una lista de palabras y puntuación.
+    Es predecible y no divide los números.
+    """
+    # Esta expresión regular encuentra secuencias de caracteres de palabra (incluyendo _)
+    # O cualquier carácter que no sea un espacio en blanco.
+    return 
+    re.findall(r'[\w.,-]+|\S', texto)
+
+def extraer_montos_con_reglas(texto):
+    """
+    Versión final y robusta que usa un tokenizador simple y predecible.
+    """
+    # --- PASO 2: USAMOS NUESTRO TOKENIZADOR SIMPLE ---
+    tokens = tokenizar_texto_simple(texto)
+    
+    # El resto de la lógica es la que ya habíamos validado, ahora sobre tokens correctos.
+    found_keywords = []
+    for i, token_str in enumerate(tokens):
+        token_lower = token_str.lower()
+        # (La lógica de fuzzy matching para encontrar keywords es la misma)
+        for key in DEPOSITO_KEYS:
+            if fuzz.ratio(token_lower, key) > SIMILARITY_THRESHOLD:
+                found_keywords.append({"index": i, "type": "DEPOSITO"})
+                break
+        else:
+            for key in RETIRO_KEYS:
+                if fuzz.ratio(token_lower, key) > SIMILARITY_THRESHOLD:
+                    found_keywords.append({"index": i, "type": "RETIRO"})
+                    break
+    
+    if not found_keywords:
+        return {}
+
+    resultados = {}
+    for i, keyword_info in enumerate(found_keywords):
+        token_index = keyword_info["index"]
+        start_search = token_index + 1
+        end_search = found_keywords[i + 1]["index"] if i + 1 < len(found_keywords) else len(tokens)
+        
+        search_window = tokens[start_search:end_search]
+        
+        numeros_encontrados_str = [token_str for token_str in search_window if es_monto_potencial(token_str)]
+        
+        if numeros_encontrados_str:
+            monto_str = numeros_encontrados_str[-1]
+            monto_valor = limpiar_y_convertir_monto(monto_str)
+            
+            # Prevenimos sobrescribir resultados si ya encontramos uno mejor
+            tipo_resultado = "MONTO_" + keyword_info["type"]
+            if tipo_resultado not in resultados:
+                resultados[tipo_resultado] = monto_valor
+                
+    return resultados
+
+# --- Prueba Final ---
+texto_de_prueba = 'Movimientos: un ab0no / deposito 5,45o.50 y varios karg0s por 1,200.00'
+print(f"--- Analizando con la solución final y el tokenizador simple ---")
+print(f"'{texto_de_prueba}'")
+
+resultados = extraer_montos_con_reglas(texto_de_prueba)
+print("Resultados extraídos:")
+print(resultados)
+
+# Verificamos el primer caso también
+texto_de_prueba_2 = "No hubo retiros este mes, solo un ingreso de 15,000"
+print(f"\n--- Analizando el segundo caso ---")
+print(f"'{texto_de_prueba_2}'")
+resultados_2 = extraer_montos_con_reglas(texto_de_prueba_2)
+print("Resultados extraídos:")
+print(resultados_2)
