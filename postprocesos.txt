@@ -1,0 +1,80 @@
+from typing import List, Any
+
+# Las funciones auxiliares no cambian
+def calcular_area(bbox: List[int]) -> float:
+    """Calcula el área de una caja delimitadora [x1, y1, x2, y2]."""
+    x1, y1, x2, y2 = bbox
+    return (x2 - x1) * (y2 - y1)
+
+def esta_contenida(bbox_a: List[int], bbox_b: List[int]) -> bool:
+    """Verifica si la caja A está completamente contenida en la caja B."""
+    ax1, ay1, ax2, ay2 = bbox_a
+    bx1, by1, bx2, by2 = bbox_b
+    return ax1 >= bx1 and ay1 >= by1 and ax2 <= bx2 and ay2 <= by2
+
+# --- FUNCIÓN PRINCIPAL MODIFICADA ---
+def filtrar_tablas_anidadas(resultados_deteccion: List[list]) -> List[list]:
+    """
+    Filtra una lista de resultados para quedarse solo con las tablas de mayor área
+    cuando unas contienen a otras.
+
+    Args:
+        resultados_deteccion (list): Una lista de resultados, donde cada resultado es
+                                     una lista con [PIL.Image, bbox, score].
+    
+    Returns:
+        list: Una nueva lista de resultados filtrados.
+    """
+    if not resultados_deteccion:
+        return []
+
+    indices_a_eliminar = set()
+    # Accedemos al bbox en el índice 1 de cada resultado
+    areas = [calcular_area(res[1]) for res in resultados_deteccion]
+
+    for i in range(len(resultados_deteccion)):
+        for j in range(len(resultados_deteccion)):
+            if i == j:
+                continue
+
+            # Extraemos el bbox (en el índice 1) para la comparación
+            bbox_i = resultados_deteccion[i][1]
+            bbox_j = resultados_deteccion[j][1]
+            
+            if esta_contenida(bbox_i, bbox_j):
+                if areas[i] < areas[j]:
+                    indices_a_eliminar.add(i)
+            elif esta_contenida(bbox_j, bbox_i):
+                if areas[j] < areas[i]:
+                    indices_a_eliminar.add(j)
+                    
+    # Construir la lista final con los resultados completos que no deben ser eliminados
+    resultados_finales = [
+        resultado for i, resultado in enumerate(resultados_deteccion) 
+        if i not in indices_a_eliminar
+    ]
+            
+    return resultados_finales
+
+# --- DATOS DE EJEMPLO CON TU ESTRUCTURA ---
+# Usamos strings como placeholders para los objetos PIL.Image
+
+resultados_originales = [
+    # [Imagen,               Coordenadas,             Score]
+    ["<Imagen PIL 1>", [50, 50, 500, 500], 0.98],   # Tabla grande
+    ["<Imagen PIL 2>", [100, 100, 300, 300], 0.95], # Tabla pequeña contenida en la anterior
+    ["<Imagen PIL 3>", [550, 100, 800, 400], 0.99]  # Tabla independiente
+]
+
+print(f"Resultados originales: {len(resultados_originales)} tablas")
+for img, bbox, score in resultados_originales:
+    print(f"- BBox: {bbox}, Área: {calcular_area(bbox)}, Score: {score}")
+
+
+# Aplicamos el filtro
+resultados_filtrados = filtrar_tablas_anidadas(resultados_originales)
+
+
+print(f"\nResultados después del filtrado: {len(resultados_filtrados)} tablas")
+for img, bbox, score in resultados_filtrados:
+    print(f"- BBox: {bbox}, Área: {calcular_area(bbox)}, Score: {score}")
