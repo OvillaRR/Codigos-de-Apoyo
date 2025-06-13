@@ -1,32 +1,31 @@
 import re
 
-# 1️⃣ Lista de nombres/abreviaturas de mes que solemos encontrar
-MESES_LARGOS = (
-    "enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|"
-    "octubre|noviembre|diciembre"
-)
-MESES_CORTOS = "ENE|FEB|MAR|ABR|MAY|JUN|JUL|AGO|SEP|OCT|NOV|DIC"
+MESES_LARGOS  = ("enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|"
+                 "octubre|noviembre|diciembre")
+MESES_CORTOS  = "ENE|FEB|MAR|ABR|MAY|JUN|JUL|AGO|SEP|OCT|NOV|DIC"
 
-# 2️⃣ Un único patrón que cubra los formatos más comunes
 PATRON_FECHAS = rf"""
-    (?:                                   # Grupo general, NO captura
-        # 24/FEB/2018   — abreviatura en mayúsculas con barras
+    (?:                                                 # ▸ formatos cubiertos
+        # 24/FEB/2018
         \b\d{{1,2}}/(?:{MESES_CORTOS})/\d{{4}}\b
-      | # 24-02-2018 ó 1/6/25            — numérico con - o /
+      | # 24-02-2018  ó 1/6/25
         \b\d{{1,2}}[/-]\d{{1,2}}[/-]\d{{2,4}}\b
-      | # 1 de junio de 2025             — “día de mes de año”
-        \b\d{{1,2}}\s+de\s+(?:{MESES_LARGOS})\s+de\s+\d{{4}}\b
+      | # 17 de marzo 2025   (con 2.º “de” opcional)
+        \b\d{{1,2}}\s+de\s+(?:{MESES_LARGOS})\s+(?:de\s+)?\d{{4}}\b
     )
 """
 
-regex_fechas = re.compile(PATRON_FECHAS, re.IGNORECASE | re.VERBOSE)
+# ▸ Opcionalmente: admite “al 17 de marzo 2025”, “el 3 de mayo 2024” …
+PATRON_PREPOSICION = rf"(?:\b(?:al|el|desde|hasta|para)\s+)?(?:{PATRON_FECHAS})"
+regex_fechas = re.compile(PATRON_PREPOSICION, re.IGNORECASE | re.VERBOSE)
 
 def quitar_fechas(texto: str) -> str:
-    """Devuelve `texto` sin los fragmentos que parezcan fechas."""
     return regex_fechas.sub("", texto)
 
 ejemplo = (
     "El evento fue el 24/FEB/2018 y se repitió el 1 de junio de 2025; "
     "otra referencia: 05-10-22."
 )
+
+ejemplo = "Pagado al 17 de marzo 2025 y facturado el 24/FEB/2018."
 print(quitar_fechas(ejemplo))
