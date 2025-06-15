@@ -1,113 +1,132 @@
 
-import re
-from typing import Dict, Optional, List, Tuple
-
-# ──────────────────────────────────────────────────────────────
-# 0. Utilidades que ya tenías ─ (copiadas sólo lo necesario)
-# ──────────────────────────────────────────────────────────────
-def _levenshtein(a: str, b: str) -> int:
-    if a == b: return 0
-    if not a:  return len(b)
-    if not b:  return len(a)
-    if len(a) > len(b): a, b = b, a
-    prev = list(range(len(a)+1)); curr = [0]*(len(a)+1)
-    for i, ch_b in enumerate(b, 1):
-        curr[0] = i
-        for j, ch_a in enumerate(a, 1):
-            ins = prev[j] + 1
-            dele = curr[j-1] + 1
-            subst = prev[j-1] + (ch_a != ch_b)
-            curr[j] = min(ins, dele, subst)
-        prev, curr = curr, prev
-    return prev[-1]
-
-def ratio(s1: str, s2: str) -> int:
-    if s1 is None or s2 is None: return 0
-    s1, s2 = str(s1), str(s2)
-    dist = _levenshtein(s1.lower(), s2.lower())
-    mx = max(len(s1), len(s2))
-    return 100 if mx == 0 else int(round((1 - dist/mx) * 100))
-
-TOKEN_RE = re.compile(r"[\w.,'-]+|\S")
 def _tokenize(txt: str) -> List[str]:
+    """Devuelve lista de tokens conservando números con comas/puntos."""
     return TOKEN_RE.findall(txt)
 
-# ──────────────────────────────────────────────────────────────
-# 1. Parámetros para la extracción de datos de cliente
-# ──────────────────────────────────────────────────────────────
-SIMILARITY = 70      # umbral fuzzy
-LOOKAHEAD  = 8       # tokens tras la keyword a inspeccionar
 
-CLIENTE_KEYS = ["cliente", "idcliente", "id cliente", "no cliente", "nº cliente"]
-CUENTA_KEYS  = ["cuenta", "num cuenta", "número de cuenta", "n° de cuenta"]
-CLABE_KEYS   = ["clabe", "clabe inter", "clabe interbancaria"]
+# ──────────────────────────────────────────────────────────────
+# 2.  Parámetros y listas de keywords
+# ──────────────────────────────────────────────────────────────
+SIMILARITY = 70         # umbral fuzzy 0-100
+LOOKAHEAD = 8           # nº máx. de tokens a la derecha tras la keyword
 
-# Stop-words **financieros** para cortar la ventana
+CLIENTE_KEYS = [
+    "cliente", "id cliente", "idcliente", "no cliente", "nº cliente"
+]
+CUENTA_KEYS = [
+    "cuenta", "num cuenta", "número de cuenta", "n° de cuenta"
+]
+CLABE_KEYS = ["clabe", "clabe inter", "clabe interbancaria"]
+
+# Palabras que indican que empieza la parte financiera
 FIN_STOP = {
     "saldo", "deposito", "depositos", "retiro", "retiros",
     "cargos", "abono", "abonos", "intereses", "tasa", "rendimiento"
 }
 
-# Patrón de dígitos (permite espacios en medio)
-_RE_SOLO_NUM = re.compile(r"^\d[\d\s]{3,}$")
+
+# ──────────────────────────────────────────────────────────────
+# 3.  Helpers de números
+# ──────────────────────────────────────────────────────────────
+def _is_num_token(tok: str, tag: str) -> bool:
+    """
+    True si el token puede ser parte del número del campo 'tag'.
+    Para CLABE aceptamos tokens de 2-18 dígitos (ej. '072').
+    Para CLIENTE/CUENTA exigimos ≥4 dígitos para evitar contadores pequeños.
+    """
+    if not tok or not tok[0].isdigit():
+        return False
+    digits = re.sub(r"\D", "", tok)
+    if tag == "CLABE":
+        return 2 <= len(digits) <= 18
+    return len(digits) >= 4
+
 
 def _clean_digits(tokens: List[str]) -> str:
-    """Une tokens numéricos contiguos y devuelve dígitos sin espacios."""
-    digits = "".join(re.sub(r"\D", "", t) for t in tokens)
-    return digits
+    """Concatena tokens y elimina todo lo que no sea dígito."""
+    return "".join(re.sub(r"\D", "", t) for t in tokens)
 
-def _extract_numeric_window(tokens: List[str], start: int) -> Tuple[str, int]:
+
+def _extract_numeric_window(tokens: List[str], start: int,
+                            tag: str) -> Tuple[str, int]:
     """
-    Desde start (excluido), toma tokens hasta LOOKAHEAD o stop-word,
-    devuelve el número concatenado + cuántos tokens consumió.
+    Desde posición `start` (excluido) examina hasta `LOOKAHEAD` tokens
+    para formar el número solicitado.
+
+    • CLIENTE → toma solo el primer token numérico.
+    • CUENTA / CLABE → concatena tokens numéricos contiguos
+      hasta que aparezca FIN_STOP o se supera LOOKAHEAD.
+    • Para CLABE cerramos en cuanto alcanzamos 18 dígitos.
+
+    Devuelve: (numero_str, tokens_consumidos)
     """
-    buff, consumed = [], 0
+    buff: List[str] = []
+    consumed = 0
+    total_len = 0
+
     for j in range(start, min(start + LOOKAHEAD, len(tokens))):
-        if tokens[j].lower() in FIN_STOP:       # cortamos si comienza sección financiera
+        t = tokens[j]
+        if t.lower() in FIN_STOP:
             break
-        if _RE_SOLO_NUM.match(tokens[j]):       # es token mayormente numérico
-            buff.append(tokens[j])
+
+        if _is_num_token(t, tag):
+            digits = re.sub(r"\D", "", t)
+            buff.append(digits)
+            total_len += len(digits)
             consumed = j - start + 1
-        else:
-            # si encontramos texto no-numérico intercalado, terminamos
-            if buff:
-                break
-    numero = _clean_digits(buff)
-    return numero, consumed
+
+            if tag == "CLIENTE":
+                break                     # solo 1 token
+            if tag == "CLABE" and total_len >= 18:
+                break                    # longitud completa
+        elif buff:
+            break                         # terminó la secuencia numérica
+
+    return _clean_digits(buff), consumed
+
 
 def _validate_field(tag: str, num: str) -> Optional[str]:
-    """Valida longitud según el tipo de dato."""
-    if not num: return None
+    """Valida la longitud correcta para CLIENTE, CUENTA, CLABE."""
+    if not num:
+        return None
     if tag == "CLIENTE" and 6 <= len(num) <= 10:
         return num
-    if tag == "CUENTA"  and 11 <= len(num) <= 16:   # bancos mexicanos usan 13-14 dígitos típ.
+    if tag == "CUENTA" and 11 <= len(num) <= 16:
         return num
-    if tag == "CLABE"   and len(num) == 18:
+    if tag == "CLABE" and len(num) == 18:
         return num
     return None
 
+
 # ──────────────────────────────────────────────────────────────
-# 2. Función principal
+# 4.  Función principal
 # ──────────────────────────────────────────────────────────────
 def extraer_datos_cliente(texto: str) -> Dict[str, str]:
     """
-    Devuelve un dict con:
-      • 'CLIENTE' : ID de cliente (6-10 dígitos)
-      • 'CUENTA'  : número de cuenta (11-16 dígitos)
-      • 'CLABE'   : CLABE de 18 dígitos (puede estar segmentada)
+    Extrae identificadores de CLIENTE, CUENTA y CLABE de un texto.
+
+    >>> txt = ("Cliente 86788218 000303209002993 "
+    ...        "Cuenta 02180168222798 "
+    ...        "Clabe 072 3200 0560 8729 470 "
+    ...        "saldo 515,744.10")
+    >>> extraer_datos_cliente(txt)
+    {'CLIENTE': '86788218',
+     'CUENTA':  '02180168222798',
+     'CLABE':   '072320005608729470'}
     """
     tokens = _tokenize(texto)
-    resultado = {}
+    resultado: Dict[str, str] = {}
 
     i = 0
     while i < len(tokens):
         tok = tokens[i]
         low = tok.lower()
 
+        # Comprueba similitud contra cada lista de keywords
         def _match(keys):
             return any(ratio(low, k) >= SIMILARITY for k in keys)
 
-        tag = None
+        tag: Optional[str] = None
         if _match(CLIENTE_KEYS):
             tag = "CLIENTE"
         elif _match(CUENTA_KEYS):
@@ -116,11 +135,11 @@ def extraer_datos_cliente(texto: str) -> Dict[str, str]:
             tag = "CLABE"
 
         if tag:
-            num, consumed = _extract_numeric_window(tokens, i + 1)
+            num, consumed = _extract_numeric_window(tokens, i + 1, tag)
             val = _validate_field(tag, num)
-            if val and tag not in resultado:         # primera ocurrencia gana
+            if val and tag not in resultado:      # primera ocurrencia
                 resultado[tag] = val
-            i += consumed        # saltar lo que ya consumimos
+            i += consumed                         # avanza tokens leídos
         i += 1
 
     return resultado
