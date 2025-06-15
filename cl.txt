@@ -1,4 +1,37 @@
 
+import re
+from typing import Dict, Optional, List, Tuple
+
+# ──────────────────────────────────────────────────────────────
+# 0. Utilidades que ya tenías ─ (copiadas sólo lo necesario)
+# ──────────────────────────────────────────────────────────────
+def _levenshtein(a: str, b: str) -> int:
+    if a == b: return 0
+    if not a:  return len(b)
+    if not b:  return len(a)
+    if len(a) > len(b): a, b = b, a
+    prev = list(range(len(a)+1)); curr = [0]*(len(a)+1)
+    for i, ch_b in enumerate(b, 1):
+        curr[0] = i
+        for j, ch_a in enumerate(a, 1):
+            ins = prev[j] + 1
+            dele = curr[j-1] + 1
+            subst = prev[j-1] + (ch_a != ch_b)
+            curr[j] = min(ins, dele, subst)
+        prev, curr = curr, prev
+    return prev[-1]
+
+def ratio(s1: str, s2: str) -> int:
+    if s1 is None or s2 is None: return 0
+    s1, s2 = str(s1), str(s2)
+    dist = _levenshtein(s1.lower(), s2.lower())
+    mx = max(len(s1), len(s2))
+    return 100 if mx == 0 else int(round((1 - dist/mx) * 100))
+
+TOKEN_RE = re.compile(r"[\w.,'-]+|\S")
+def _tokenize(txt: str) -> List[str]:
+    return TOKEN_RE.findall(txt)
+
 # ──────────────────────────────────────────────────────────────
 # 1. Parámetros para la extracción de datos de cliente
 # ──────────────────────────────────────────────────────────────
@@ -91,3 +124,4 @@ def extraer_datos_cliente(texto: str) -> Dict[str, str]:
         i += 1
 
     return resultado
+
