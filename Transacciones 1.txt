@@ -34,46 +34,66 @@ _RE_FECHA = re.compile(
     re.IGNORECASE | re.VERBOSE
 )
 
-# 1️⃣  Sustituye por esta versión más flexible
+
+
 def _is_fecha(tok: str) -> bool:
     """
-    Reconoce:
-      • DD/MM         → 03/03
-      • MM/DD         → 02/28
-      • DD/MM/YY(YY)  → 03/03/24
-      • DD-MMM        → 20/feb
-      • DD/MMM(/YY)   → 20/feb/24
-      • DD-MM-YYYY    → 20-02-2024
-    Valida rangos básicos (1-31 día, 1-12 mes).
+    Reconoce ahora TODOS estos formatos:
+
+      ➊  DD/MM         → 03/03
+      ➋  MM/DD         → 02/28
+      ➌  DD/MM/YY(YY)  → 03/03/24  ·  03/03/2024
+      ➍  DD-MMM(/YY)   → 16-jun    · 16jun
+      ➎  DD-MMM-YYYY   → 16-jun-2024
+      ➏  DD            → 06   (1-2 dígitos, 1–31)
+      
+    Valida rangos básicos (día 1–31, mes 1–12 / “ene…dic”).
     """
-    tok = tok.lower()
-    # 1. guiones → barras (simplifica parsing)
+
+    # 0) limpiamos puntuación suelta  '06,'  '28.'  '16jun,' …
+    tok = tok.lower().strip(".,")
+    if not tok:
+        return False
+
+    # 1) normalizamos guiones a barras  →  16-jun  → 16/jun
     tok = tok.replace("-", "/")
 
-    # 2. token por partes
+    # 2) caso «ddmon» pegado  →  16jun
+    m = re.fullmatch(r"(\d{1,2})([a-z]{3})", tok)
+    if m:
+        dia, mes = int(m.group(1)), m.group(2)
+        return 1 <= dia <= 31 and mes in _MESES_3
+
+    # 3) token sólo dígitos de 1-2 caracteres  → 06 07 08
+    if tok.isdigit() and 1 <= len(tok) <= 2:
+        return 1 <= int(tok) <= 31
+
+    # 4) formatos con separador «/»
     parts = tok.split("/")
-    if len(parts) < 2:
-        return False  # no hay separador
+    if len(parts) < 2:                 # no tiene separador
+        return False
 
-    dia = parts[0]
-    mes = parts[1]
-    anio = parts[2] if len(parts) > 2 else None
+    dia, mes = parts[0], parts[1]
+    anio     = parts[2] if len(parts) > 2 else None
 
-    # a) formato 20/feb
+    # 4a) mes escrito con letras  → 20/feb(/24)
     if mes.isalpha():
-        return mes[:3] in _MESES_3 and dia.isdigit() and 1 <= int(dia) <= 31
+        if mes[:3] not in _MESES_3:
+            return False
+        return dia.isdigit() and 1 <= int(dia) <= 31
 
-    # b) formato 03/03  ó 03/03/2024
+    # 4b) mes numérico  → 03/03(/2024)
     if dia.isdigit() and mes.isdigit():
         d, m = int(dia), int(mes)
         if not (1 <= d <= 31 and 1 <= m <= 12):
             return False
-        if anio:
-            if not anio.isdigit():
-                return False
+        if anio and not anio.isdigit():
+            return False
         return True
 
     return False
+
+
 
 # ──────────────────────────────────────────────────────────────
 # 2.  Detección y conversión de montos
