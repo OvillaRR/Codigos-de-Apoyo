@@ -1,0 +1,126 @@
+"""
+extraer_transacciones.py
+------------------------
+Reconstruye transacciones en un estado de cuenta sin formatear.
+
+Cada transacción comienza con 1-2 fechas (p. ej. 20/feb 21/feb) y
+su PRIMER monto (1,000.00, 49,999.99…) es el depósito/retiro.
+
+La función principal es:
+    >>> extraer_transacciones(texto: str) -> list[dict]
+"""
+
+from __future__ import annotations
+import re
+from typing import List, Dict
+
+# ──────────────────────────────────────────────────────────────
+# 1.  Identificar tokens de FECHA
+# ──────────────────────────────────────────────────────────────
+_MESES_3 = {
+    "ene", "feb", "mar", "abr", "may", "jun",
+    "jul", "ago", "sep", "oct", "nov", "dic"
+}
+
+_RE_FECHA = re.compile(
+    r"""
+    ^(
+        \d{1,2}/(?:\d{1,2}|\d{4})               # 12/12  ó 12/2024
+      | \d{1,2}/[a-z]{3}                        # 20/feb
+      | \d{1,2}/[a-z]{3}/\d{2,4}                # 20/feb/24
+      | \d{1,2}-\d{1,2}-\d{2,4}                 # 20-02-2024
+    )$
+    """,
+    re.IGNORECASE | re.VERBOSE
+)
+
+def _is_fecha(tok: str) -> bool:
+    if not _RE_FECHA.match(tok):
+        return False
+    # cuando es formato 20/feb verificar que "feb" esté en la lista
+    parts = tok.lower().split("/")
+    return len(parts) < 2 or parts[1][:3] in _MESES_3
+
+# ──────────────────────────────────────────────────────────────
+# 2.  Detección y conversión de montos
+# ──────────────────────────────────────────────────────────────
+def _parse_monto(tok: str) -> float | None:
+    """
+    Devuelve float si:
+      • contiene al menos ',' o '.'   (descarta códigos como 2300)
+      • puede interpretarse como importe (máx. 2 decimales)
+    """
+    if "." not in tok and "," not in tok:
+        return None
+
+    # quita todo excepto dígitos, , y .
+    limpio = re.sub(r"[^\d.,]", "", tok)
+    if not re.search(r"\d", limpio):
+        return None
+
+    # separador decimal = último . ó ,
+    idx = max(limpio.rfind("."), limpio.rfind(","))
+    ent  = re.sub(r"\D", "", limpio[:idx]) if idx != -1 else re.sub(r"\D", "", limpio)
+    dec  = re.sub(r"\D", "", limpio[idx + 1:]) if idx != -1 else ""
+    dec  = (dec + "00")[:2]                 # 0-2 dígitos
+
+    try:
+        val = float(f"{int(ent)}.{dec}")
+    except ValueError:
+        return None
+
+    # filtro de sanidad (0 < monto < 100 millones)
+    return val if 0 < val < 100_000_000 else None
+
+# ──────────────────────────────────────────────────────────────
+# 3.  Función principal
+# ──────────────────────────────────────────────────────────────
+def extraer_transacciones(texto: str) -> List[Dict[str, str | float]]:
+    """
+    Devuelve lista de transacciones:
+        {'FECHA': '20/feb 21/feb',
+         'TEXTO': 'spei enviado banamex 430.00 2300 8,284.48 ...',
+         'MONTO': 430.0}
+    """
+    # tokenización mínima (espacios)
+    tokens = texto.split()
+    n = len(tokens)
+    # índices donde comienza una posible transacción
+    idx_fechas = [i for i, t in enumerate(tokens) if _is_fecha(t)]
+
+    transacciones = []
+
+    for k, start in enumerate(idx_fechas):
+        end = idx_fechas[k + 1] if k + 1 < len(idx_fechas) else n
+        seg = tokens[start:end]
+
+        # 1) agrupa las 1-2 fechas iniciales
+        j = 0
+        fechas = []
+        while j < len(seg) and _is_fecha(seg[j]):
+            fechas.append(seg[j])
+            j += 1
+
+        if not fechas:               # defensa — no debería ocurrir
+            continue
+
+        # 2) busca el PRIMER token-monto válido
+        monto = None
+        for t in seg[j:]:
+            monto = _parse_monto(t)
+            if monto is not None:
+                break
+
+        if monto is None:
+            continue                 # transacción inválida → salta
+
+        # 3) arma texto descriptivo (sin las fechas)
+        texto_tx = " ".join(seg[j:]).strip()
+
+        transacciones.append({
+            "FECHA": " ".join(fechas),
+            "TEXTO": texto_tx,
+            "MONTO": monto
+        })
+
+    return transacciones
