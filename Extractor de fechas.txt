@@ -1,0 +1,134 @@
+import re
+from datetime import datetime, timedelta
+from typing import Optional, Dict, List, Tuple
+
+# ──────────────────────────────────────────────────────────────
+# 1. Funciones de Similitud y Tokenización
+# ──────────────────────────────────────────────────────────────
+
+def _levenshtein(a: str, b: str) -> int:
+    """Calcula la distancia de Levenshtein entre dos cadenas."""
+    if a == b: return 0
+    if not a: return len(b)
+    if not b: return len(a)
+    if len(a) > len(b): a, b = b, a
+    prev = list(range(len(a) + 1)); curr = [0] * (len(a) + 1)
+    for i, ch_b in enumerate(b, 1):
+        curr[0] = i
+        for j, ch_a in enumerate(a, 1):
+            ins = prev[j] + 1
+            dele = curr[j-1] + 1
+            subst = prev[j-1] + (ch_a != ch_b)
+            curr[j] = min(ins, dele, subst)
+        prev, curr = curr, prev
+    return prev[-1]
+
+def ratio(s1: str, s2: str) -> int:
+    """Calcula el ratio de similitud (0-100) basado en Levenshtein."""
+    if s1 is None or s2 is None: return 0
+    s1, s2 = str(s1), str(s2)
+    dist = _levenshtein(s1.lower(), s2.lower())
+    mx = max(len(s1), len(s2))
+    return 100 if mx == 0 else int(round((1 - dist / mx) * 100))
+
+# --- LÍNEA CORREGIDA ---
+TOKEN_RE = re.compile(r"[\w/.,'-]+|\S") # Se añadió la barra '/' aquí
+def _tokenize(txt: str) -> List[str]:
+    """Divide el texto en una lista de tokens."""
+    return TOKEN_RE.findall(txt)
+
+# ──────────────────────────────────────────────────────────────
+# 2. Constantes Específicas del Periodo
+# ──────────────────────────────────────────────────────────────
+
+SIMILARITY = 75  # Umbral de similitud para fuzzy matching
+
+PERIODO_KEYS = [
+    "periodo", "periodo del", "perido"
+]
+
+DATE_RE = re.compile(r"(\d{1,2})\s*[/.\-]\s*([a-zA-ZÁÉÍÓÚñÑ\.]+)\s*[/.\-]\s*(\d{4})")
+
+MESES_MAP = {
+    'ene': 1, 'feb': 2, 'mar': 3, 'abr': 4, 'may': 5, 'jun': 6,
+    'jul': 7, 'ago': 8, 'sep': 9, 'oct': 10, 'nov': 11, 'dic': 12
+}
+
+# ──────────────────────────────────────────────────────────────
+# 3. Funciones Auxiliares para Fechas
+# ──────────────────────────────────────────────────────────────
+
+def _normalizar_mes(mes_str: str) -> str:
+    """Convierte 'Febrero' o 'FEB.' a 'feb'."""
+    return mes_str.lower().replace('.', '')[:3]
+
+def _parse_fecha(date_tuple: Tuple[str, str, str]) -> Optional[datetime]:
+    """Convierte una tupla de (día, mes_str, año) a un objeto datetime."""
+    try:
+        dia_str, mes_str, anio_str = date_tuple
+        mes_norm = _normalizar_mes(mes_str)
+        if mes_norm not in MESES_MAP:
+            return None
+        return datetime(year=int(anio_str), month=MESES_MAP[mes_norm], day=int(dia_str))
+    except (ValueError, TypeError):
+        return None
+
+def _extract_periodo_window(tokens: List[str], start: int) -> Tuple[Optional[Dict[str, str]], int]:
+    """Busca un periodo válido en una ventana de tokens y lo valida."""
+    window_tokens = tokens[start : start + 12]
+    
+    # Limpiamos la puntuación final (como comas) que pueda estar pegada a un token
+    cleaned_tokens = [re.sub(r'[,.]$', '', tok) for tok in window_tokens]
+    window_str = " ".join(cleaned_tokens)
+    
+    fechas_encontradas = DATE_RE.findall(window_str)
+    
+    if len(fechas_encontradas) < 2:
+        return None, 0
+
+    fecha1_obj = _parse_fecha(fechas_encontradas[0])
+    fecha2_obj = _parse_fecha(fechas_encontradas[1])
+    
+    if not fecha1_obj or not fecha2_obj:
+        return None, 0
+        
+    diferencia_dias = abs((fecha2_obj - fecha1_obj).days)
+    
+    if diferencia_dias >= 20:
+        inicio = min(fecha1_obj, fecha2_obj)
+        fin = max(fecha1_obj, fecha2_obj)
+        periodo = {"inicio": inicio.strftime('%Y-%m-%d'), "fin": fin.strftime('%Y-%m-%d')}
+        return periodo, len(window_tokens)
+        
+    return None, 0
+
+# ──────────────────────────────────────────────────────────────
+# 4. Función Principal para Extraer Periodo
+# ──────────────────────────────────────────────────────────────
+def extraer_periodo(texto: str) -> Optional[Dict[str, str]]:
+    """Analiza un texto y extrae el primer periodo de fechas válido que encuentra."""
+    tokens = _tokenize(texto)
+    i = 0
+    while i < len(tokens):
+        keyword_found = False
+        
+        for phrase_len in range(3, 0, -1):
+            if i + phrase_len > len(tokens):
+                continue
+            
+            phrase = " ".join(tokens[i : i + phrase_len])
+            
+            if any(ratio(phrase.lower(), k.lower()) >= SIMILARITY for k in PERIODO_KEYS):
+                keyword_found = True
+                periodo, consumed = _extract_periodo_window(tokens, i + phrase_len)
+                
+                if periodo:
+                    return periodo
+                
+                i += phrase_len
+                break
+        
+        if not keyword_found:
+            i += 1
+            
+    return None
