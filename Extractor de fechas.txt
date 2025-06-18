@@ -1,3 +1,4 @@
+
 import re
 from datetime import datetime, timedelta
 from typing import Optional, Dict, List, Tuple
@@ -31,8 +32,8 @@ def ratio(s1: str, s2: str) -> int:
     mx = max(len(s1), len(s2))
     return 100 if mx == 0 else int(round((1 - dist / mx) * 100))
 
-# --- LÍNEA CORREGIDA ---
-TOKEN_RE = re.compile(r"[\w/.,'-]+|\S") # Se añadió la barra '/' aquí
+# Se ajustó para que las fechas con '/' sean un solo token
+TOKEN_RE = re.compile(r"[\w/.,'-]+|\S")
 def _tokenize(txt: str) -> List[str]:
     """Divide el texto en una lista de tokens."""
     return TOKEN_RE.findall(txt)
@@ -47,7 +48,11 @@ PERIODO_KEYS = [
     "periodo", "periodo del", "perido"
 ]
 
-DATE_RE = re.compile(r"(\d{1,2})\s*[/.\-]\s*([a-zA-ZÁÉÍÓÚñÑ\.]+)\s*[/.\-]\s*(\d{4})")
+# Expresión para formato: 17/03/2025 o 17-mar-2025
+RE_FECHA_SLASH = re.compile(r"(\d{1,2})\s*[/.\-]\s*([a-zA-ZÁÉÍÓÚñÑ\.]+)\s*[/.\-]\s*(\d{4})")
+
+# Expresión para formato: 17 de marzo de 2025 (el año es opcional)
+RE_FECHA_DE = re.compile(r"(\d{1,2})\s+de\s+([a-zA-ZÁÉÍÓÚñÑ]+)(?:\s+de\s+|\s+)(\d{4})?")
 
 MESES_MAP = {
     'ene': 1, 'feb': 2, 'mar': 3, 'abr': 4, 'may': 5, 'jun': 6,
@@ -62,36 +67,64 @@ def _normalizar_mes(mes_str: str) -> str:
     """Convierte 'Febrero' o 'FEB.' a 'feb'."""
     return mes_str.lower().replace('.', '')[:3]
 
-def _parse_fecha(date_tuple: Tuple[str, str, str]) -> Optional[datetime]:
-    """Convierte una tupla de (día, mes_str, año) a un objeto datetime."""
+def _parse_fecha(date_tuple: Tuple[str, ...]) -> Optional[datetime]:
+    """
+    Convierte una tupla de (día, mes_str, [año]) a un objeto datetime.
+    El año es opcional.
+    """
     try:
-        dia_str, mes_str, anio_str = date_tuple
+        dia_str = date_tuple[0]
+        mes_str = date_tuple[1]
+        anio_str = date_tuple[2] if len(date_tuple) > 2 and date_tuple[2] else None
+
         mes_norm = _normalizar_mes(mes_str)
         if mes_norm not in MESES_MAP:
             return None
-        return datetime(year=int(anio_str), month=MESES_MAP[mes_norm], day=int(dia_str))
+        
+        # Si no hay año, usamos un año temporal (luego se corregirá)
+        anio = int(anio_str) if anio_str else 1
+            
+        return datetime(year=anio, month=MESES_MAP[mes_norm], day=int(dia_str))
     except (ValueError, TypeError):
         return None
 
 def _extract_periodo_window(tokens: List[str], start: int) -> Tuple[Optional[Dict[str, str]], int]:
-    """Busca un periodo válido en una ventana de tokens y lo valida."""
-    window_tokens = tokens[start : start + 12]
+    """
+    Busca un periodo válido en una ventana de tokens usando múltiples patrones de fecha.
+    """
+    window_tokens = tokens[start : start + 20] # Ventana amplia para más flexibilidad
+    window_str = " ".join(window_tokens)
     
-    # Limpiamos la puntuación final (como comas) que pueda estar pegada a un token
-    cleaned_tokens = [re.sub(r'[,.]$', '', tok) for tok in window_tokens]
-    window_str = " ".join(cleaned_tokens)
-    
-    fechas_encontradas = DATE_RE.findall(window_str)
-    
+    fechas_encontradas = []
+
+    # Buscar con ambos patrones y guardar la fecha y su posición de inicio en el texto
+    for regex in [RE_FECHA_SLASH, RE_FECHA_DE]:
+        for match in regex.finditer(window_str):
+            grupos_validos = tuple(g for g in match.groups() if g)
+            fecha_obj = _parse_fecha(grupos_validos)
+            if fecha_obj:
+                fechas_encontradas.append({'fecha': fecha_obj, 'pos': match.start()})
+
     if len(fechas_encontradas) < 2:
         return None, 0
 
-    fecha1_obj = _parse_fecha(fechas_encontradas[0])
-    fecha2_obj = _parse_fecha(fechas_encontradas[1])
+    # Ordenar las fechas según su aparición en el texto
+    fechas_encontradas.sort(key=lambda x: x['pos'])
     
-    if not fecha1_obj or not fecha2_obj:
-        return None, 0
-        
+    fecha1_obj = fechas_encontradas[0]['fecha']
+    fecha2_obj = fechas_encontradas[1]['fecha']
+    
+    # Lógica para asignar el año correcto si falta en una de las fechas
+    if fecha1_obj.year == 1 and fecha2_obj.year != 1:
+        fecha1_obj = fecha1_obj.replace(year=fecha2_obj.year)
+        if fecha1_obj > fecha2_obj:
+            fecha1_obj = fecha1_obj.replace(year=fecha2_obj.year - 1)
+
+    elif fecha2_obj.year == 1 and fecha1_obj.year != 1:
+        fecha2_obj = fecha2_obj.replace(year=fecha1_obj.year)
+        if fecha1_obj > fecha2_obj:
+            fecha2_obj = fecha2_obj.replace(year=fecha1_obj.year + 1)
+
     diferencia_dias = abs((fecha2_obj - fecha1_obj).days)
     
     if diferencia_dias >= 20:
@@ -106,7 +139,9 @@ def _extract_periodo_window(tokens: List[str], start: int) -> Tuple[Optional[Dic
 # 4. Función Principal para Extraer Periodo
 # ──────────────────────────────────────────────────────────────
 def extraer_periodo(texto: str) -> Optional[Dict[str, str]]:
-    """Analiza un texto y extrae el primer periodo de fechas válido que encuentra."""
+    """
+    Analiza un texto y extrae el primer periodo de fechas válido que encuentra.
+    """
     tokens = _tokenize(texto)
     i = 0
     while i < len(tokens):
@@ -132,3 +167,4 @@ def extraer_periodo(texto: str) -> Optional[Dict[str, str]]:
             i += 1
             
     return None
+
