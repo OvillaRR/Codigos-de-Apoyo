@@ -1,0 +1,166 @@
+import re
+from datetime import datetime, timedelta
+from typing import Optional, Dict, List, Tuple
+
+# ──────────────────────────────────────────────────────────────
+# 1. Funciones de Similitud y Tokenización
+# ──────────────────────────────────────────────────────────────
+
+def _levenshtein(a: str, b: str) -> int:
+    if a == b: return 0
+    if not a: return len(b)
+    if not b: return len(a)
+    if len(a) > len(b): a, b = b, a
+    prev = list(range(len(a) + 1)); curr = [0] * (len(a) + 1)
+    for i, ch_b in enumerate(b, 1):
+        curr[0] = i
+        for j, ch_a in enumerate(a, 1):
+            ins, dele, subst = prev[j] + 1, curr[j-1] + 1, prev[j-1] + (ch_a != ch_b)
+            curr[j] = min(ins, dele, subst)
+        prev, curr = curr, prev
+    return prev[-1]
+
+def ratio(s1: str, s2: str) -> int:
+    dist = _levenshtein(s1.lower(), s2.lower())
+    mx = max(len(s1), len(s2))
+    return 100 if mx == 0 else int(round((1 - dist / mx) * 100))
+
+TOKEN_RE = re.compile(r"[\w/.,'-]+|\S")
+def _tokenize(txt: str) -> List[str]:
+    return TOKEN_RE.findall(txt)
+
+# ──────────────────────────────────────────────────────────────
+# 2. Constantes
+# ──────────────────────────────────────────────────────────────
+
+SIMILARITY = 75
+PERIODO_KEYS = ["periodo", "periodo del", "perido"]
+
+RE_FECHA_DUO = re.compile(
+    r"(\d{1,2})\s*-\s*([a-zA-ZÁÉÍÓÚñÑ\.]+)\s*-\s*(\d{2,4})\s*/\s*"
+    r"(\d{1,2})\s*-\s*([a-zA-ZÁÉÍÓÚñÑ\.]+)\s*-\s*(\d{2,4})"
+)
+RE_FECHA_SLASH = re.compile(r"(\d{1,2})\s*[/.\-]\s*([a-zA-ZÁÉÍÓÚñÑ\.]+)\s*[/.\-]\s*(\d{2,4})")
+# Expresión regular simplificada para el formato "de"
+RE_FECHA_DE = re.compile(r"(\d{1,2})\s+de\s+([a-zA-ZÁÉÍÓÚñÑ]+)")
+
+MESES_MAP = {
+    'ene': 1, 'feb': 2, 'mar': 3, 'abr': 4, 'may': 5, 'jun': 6,
+    'jul': 7, 'ago': 8, 'sep': 9, 'oct': 10, 'nov': 11, 'dic': 12
+}
+
+# ──────────────────────────────────────────────────────────────
+# 3. Funciones Auxiliares para Fechas (REDISEÑO FINAL)
+# ──────────────────────────────────────────────────────────────
+
+def _fix_two_digit_year(year: int) -> int:
+    if year > 1000: return year
+    current_year_short = datetime.now().year % 100
+    if year > current_year_short + 5: return 1900 + year
+    else: return 2000 + year
+
+def _parse_date_from_parts(d_str: str, m_str: str, y_str: Optional[str] = None) -> Optional[datetime]:
+    try:
+        mes_norm = m_str.lower().replace('.', '')[:3]
+        if mes_norm not in MESES_MAP: return None
+        day, month = int(d_str), MESES_MAP[mes_norm]
+        year = _fix_two_digit_year(int(y_str)) if y_str else 1
+        return datetime(year=year, month=month, day=day)
+    except (ValueError, TypeError):
+        return None
+
+def _extract_periodo_window(tokens: List[str], start: int) -> Tuple[Optional[Dict[str, any]], int]:
+    """Función final y simplificada para extraer el periodo."""
+    window_tokens = tokens[start : start + 15]
+    window_str = " ".join(window_tokens)
+    
+    # --- Búsqueda de todas las fechas posibles ---
+    fechas_encontradas = []
+
+    # 1. Buscar formato Dúo
+    match_duo = RE_FECHA_DUO.search(window_str)
+    if match_duo:
+        g = match_duo.groups()
+        f1 = _parse_date_from_parts(g[0], g[1], g[2])
+        f2 = _parse_date_from_parts(g[3], g[4], g[5])
+        if f1 and f2:
+            fechas_encontradas.extend([f1, f2])
+    
+    # 2. Si no hay duo, buscar formatos separados
+    if not fechas_encontradas:
+        # Intenta encontrar fechas con año primero
+        matches_con_anio = RE_FECHA_SLASH.findall(window_str)
+        # Luego busca fechas sin año (formato "de")
+        matches_sin_anio = RE_FECHA_DE.findall(window_str)
+
+        # Extraer año si está cerca de una fecha "de"
+        anio_cercano = None
+        match_anio = re.search(r"(?:del\s+|de\s+|al\s+)(\d{4})", window_str)
+        if match_anio:
+            anio_cercano = match_anio.group(1)
+
+        for d_str, m_str in matches_sin_anio:
+            f = _parse_date_from_parts(d_str, m_str, anio_cercano)
+            if f: fechas_encontradas.append(f)
+        
+        for d_str, m_str, y_str in matches_con_anio:
+            f = _parse_date_from_parts(d_str, m_str, y_str)
+            if f: fechas_encontradas.append(f)
+
+    if len(fechas_encontradas) < 2:
+        return None, 0
+
+    fecha1, fecha2 = fechas_encontradas[0], fechas_encontradas[1]
+    
+    # Lógica de imputación de año
+    if fecha1.year == 1 and fecha2.year != 1:
+        fecha1 = fecha1.replace(year=fecha2.year)
+        if fecha1 > fecha2: fecha1 = fecha1.replace(year=fecha2.year - 1)
+    
+    diferencia = abs((fecha2 - fecha1).days)
+    if diferencia >= 20:
+        inicio, fin = min(fecha1, fecha2), max(fecha1, fecha2)
+        return {
+            "inicio": inicio.strftime('%Y-%m-%d'),
+            "fin": fin.strftime('%Y-%m-%d'),
+            "dias_totales": diferencia
+        }, len(window_tokens)
+            
+    return None, 0
+
+# ──────────────────────────────────────────────────────────────
+# 4. Función Principal
+# ──────────────────────────────────────────────────────────────
+def extraer_periodo(texto: str) -> Optional[Dict[str, any]]:
+    tokens = _tokenize(texto)
+    i = 0
+    while i < len(tokens):
+        keyword_found = False
+        for phrase_len in range(3, 0, -1):
+            if i + phrase_len > len(tokens): continue
+            phrase = " ".join(tokens[i : i + phrase_len])
+            if any(ratio(phrase.lower(), k.lower()) >= SIMILARITY for k in PERIODO_KEYS):
+                keyword_found = True
+                periodo, _ = _extract_periodo_window(tokens, i + phrase_len)
+                if periodo: return periodo
+                i += phrase_len
+                break
+        if not keyword_found: i += 1
+    return None
+
+# ──────────────────────────────────────────────────────────────
+# Ejemplo de Uso
+# ──────────────────────────────────────────────────────────────
+if __name__ == '__main__':
+    textos_de_prueba = [
+        "periodo del 9 de junio al 8 de julio del 2023",
+        "Estado de cuenta del perido 05/FEB./2025 al 04/MAR./2025. Saldo final.",
+        "Movimientos del periodo del 01/Febrero/2021, con transacciones hasta el 28/Febrero/2021",
+        "periodo: del 17 de marzo al 16 de abril 2025",
+        "periodo 04-jul-23/02-ago-23 no",
+    ]
+    for i, texto in enumerate(textos_de_prueba, 1):
+        print(f"Texto {i}: '{texto}'")
+        resultado = extraer_periodo(texto)
+        print("Periodo Encontrado:", resultado)
+        print("-" * 30)
