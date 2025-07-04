@@ -1,0 +1,72 @@
+import numpy as np
+import pandas as pd
+
+def resumen_y_filtrado(df, dgv, q_inf=0.05,
+                       q_sup_grid=np.arange(0.80, 1.001, 0.01)):
+    """
+    - df  : DataFrame con columnas  Hoja  y  MONTO_CORR_2
+    - dgv : diccionario con los montos globales (índices 1, 2, 12, 26, …)
+    - q_inf      : cuantíl inferior fijo (0–1)
+    - q_sup_grid : array de cuantiles superiores a explorar (0–1)
+
+    Devuelve
+    --------
+    resumen     : DataFrame (uno por bloque) con q_sup óptimo, diff, total, etc.
+    df_filtrado : DataFrame original, pero sólo con las filas que
+                  quedaron dentro del intervalo [q_inf, q_sup*] de su bloque
+                  e incluye dos columnas extra:
+                      - q_lo_opt, q_hi_opt  (los límites usados)
+    """
+    # ---------- PRIMERA PASADA: encontrar límites óptimos ----------
+    claves = sorted(map(int, dgv.keys()))
+    claves.append(df["Hoja"].max() + 1)          # tope artificial
+
+    resumen_bloques = {}
+    limites = {}                                 # para almacenarlos y usarlos luego
+
+    for i, clave in enumerate(claves[:-1]):
+        ini = clave
+        fin = claves[i + 1] - 1
+
+        bloque = df.query("@ini <= Hoja <= @fin")
+        if bloque.empty:
+            continue
+
+        monto_global = dgv[clave]["MONTO_DEPOSITO"] + dgv[clave]["MONTO_RETIRO"]
+        mejor = {"q_sup": None, "total": None, "diff": np.inf}
+
+        for q_sup in q_sup_grid:
+            q_hi = bloque["MONTO_CORR_2"].quantile(q_sup)
+            q_lo = bloque["MONTO_CORR_2"].quantile(q_inf)
+
+            total = bloque.query("@q_lo <= MONTO_CORR_2 <= @q_hi")["MONTO_CORR_2"].sum()
+            diff  = abs(monto_global - total)
+
+            if diff < mejor["diff"]:
+                mejor.update({"q_sup": q_sup, "total": total,
+                              "diff": diff, "q_lo": q_lo, "q_hi": q_hi})
+
+        resumen_bloques[clave] = mejor | {"n_obs": len(bloque)}
+        limites[clave] = (mejor["q_lo"], mejor["q_hi"])      # guardo límites
+
+    resumen = pd.DataFrame(resumen_bloques).T
+
+    # ---------- SEGUNDA PASADA: aplicar los límites en todo el DataFrame ----------
+    #   Creamos un boolean mask acumulativo
+    mask_total = np.zeros(len(df), dtype=bool)
+
+    for clave, (q_lo, q_hi) in limites.items():
+        ini = clave
+        fin = claves[claves.index(clave) + 1] - 1
+
+        idx = df.query("@ini <= Hoja <= @fin").index
+        filas_ok = df.loc[idx, "MONTO_CORR_2"].between(q_lo, q_hi)
+        mask_total[idx] = filas_ok
+
+        # opcional: si quieres que aparezcan los límites en el df de salida
+        df.loc[idx, "q_lo_opt"] = q_lo
+        df.loc[idx, "q_hi_opt"] = q_hi
+
+    df_filtrado = df[mask_total].copy()
+
+    return resumen, df_filtrado
