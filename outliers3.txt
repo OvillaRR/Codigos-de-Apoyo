@@ -1,0 +1,54 @@
+def mejores_cuantiles(df, dgv, q_inf=0.05,
+                      q_sup_grid=np.arange(0.80, 0.981, 0.01)):
+    req_keys = {"MONTO_DEPOSITO", "MONTO_RETIRO"}
+    res, limites = {}, {}
+
+    claves = sorted(map(int, dgv.keys()))
+    claves.append(df["Hoja"].max() + 1)
+
+    for i, clave in enumerate(claves[:-1]):
+        # ---------- Validación de claves ----------
+        if not req_keys.issubset(dgv[clave]):
+            res[clave] = {"error": "faltan_claves", "n_obs": 0}
+            continue
+
+        ini, fin = clave, claves[i + 1] - 1
+        bloque   = df.query("@ini <= Hoja <= @fin")
+        if bloque.empty:
+            res[clave] = {"error": "sin_filas", "n_obs": 0}
+            continue
+
+        monto_global = float(dgv[clave]["MONTO_DEPOSITO"]) + \
+                       float(dgv[clave]["MONTO_RETIRO"])
+
+        mejor = {"q_sup": None, "total": None, "diff": np.inf,
+                 "q_lo": None, "q_hi": None}
+
+        for q_sup in q_sup_grid:
+            q_hi = bloque["MONTO_CORR_2"].quantile(q_sup)
+            q_lo = bloque["MONTO_CORR_2"].quantile(q_inf)
+            total = bloque.query("@q_lo <= MONTO_CORR_2 <= @q_hi")[
+                        "MONTO_CORR_2"].sum()
+
+            diff = monto_global - total
+            if diff >= 0 and diff < mejor["diff"]:
+                mejor.update({"q_sup": q_sup, "total": total,
+                              "diff": diff, "q_lo": q_lo, "q_hi": q_hi})
+
+        res[clave] = mejor | {"n_obs": len(bloque)}
+
+        if mejor["q_sup"] is not None:
+            limites[clave] = (mejor["q_lo"], mejor["q_hi"])
+
+    resumen = pd.DataFrame(res).T
+
+    # ---------- filtrado ----------
+    mask_total = np.zeros(len(df), dtype=bool)
+    for clave, (q_lo, q_hi) in limites.items():
+        ini, fin = clave, claves[claves.index(clave) + 1] - 1
+        idx = df.query("@ini <= Hoja <= @fin").index
+        filas_ok = df.loc[idx, "MONTO_CORR_2"].between(q_lo, q_hi)
+        mask_total[idx] = filas_ok
+
+    df_filtrado = df[mask_total].copy()
+    return resumen, df_filtrado
