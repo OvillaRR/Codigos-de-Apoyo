@@ -1,0 +1,25 @@
+import copy
+
+def normaliza_totales(dgv: dict) -> dict:
+    """
+    1. Elimina los bloques que no tengan 'MONTO_DEPOSITO' y 'MONTO_RETIRO'.
+    2. Si la primera clave resultante no es 1, duplica el segundo bloque
+       y lo coloca bajo la clave 1.
+
+    Devuelve un diccionario nuevo, no modifica el original.
+    """
+    # -------------- 1 · filtrar por claves obligatorias -----------------
+    oblig = {"MONTO_DEPOSITO", "MONTO_RETIRO"}
+    dgv_ok = {k: v for k, v in dgv.items() if oblig.issubset(v)}
+
+    if not dgv_ok:
+        raise ValueError("Ningún bloque contiene ambas claves obligatorias")
+
+    # -------------- 2 · asegurar que exista la clave 1 -----------------
+    claves = sorted(dgv_ok)
+    if claves[0] != 1:
+        # ¿de dónde copiamos? del segundo si existe, si no, del único
+        src = claves[1] if len(claves) >= 2 else claves[0]
+        dgv_ok[1] = copy.deepcopy(dgv_ok[src])
+
+    return dgv_ok
