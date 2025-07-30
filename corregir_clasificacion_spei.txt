@@ -1,0 +1,49 @@
+import pandas as pd
+import re
+
+def corregir_clasificacion_spei(df: pd.DataFrame, 
+                                desc_col: str, 
+                                class_col: str, 
+                                include_value: str = 'Incluir', 
+                                exclude_value: str = 'Excluir',
+                                excluir_pagos_nomina: bool = False) -> pd.DataFrame:
+    """
+    Corrige la clasificación aplicando reglas de forma independiente.
+    
+    1. Incluye todas las transacciones SPEI que estaban excluidas.
+    2. Como paso extra, excluye todas las transacciones que parezcan ser
+       pagos de nómina si el parámetro está activado.
+
+    Parameters:
+    - df: DataFrame que contiene las transacciones.
+    - desc_col: Nombre de la columna con las descripciones.
+    - class_col: Nombre de la columna con la clasificación.
+    - include_value: Valor que indica inclusión (default: 'Incluir').
+    - exclude_value: Valor que indica exclusión (default: 'Excluir').
+    - excluir_pagos_nomina: Si es True, aplica un filtro extra para excluir pagos de nómina.
+
+    Returns:
+    - DataFrame con la columna de clasificación corregida.
+    """
+    df_copy = df.copy()
+    
+    # --- REGLA 1: INCLUIR TRANSFERENCIAS SPEI ---
+    # Se crea una "máscara" para encontrar las filas que cumplen la condición.
+    # Condición: La descripción contiene 'spei' Y la clasificación actual es 'Excluir'.
+    mascara_spei = (df_copy[desc_col].str.contains(r'transf\s+interbancaria\s+spei', case=False, na=False)) & \
+                   (df_copy[class_col] == exclude_value)
+    
+    # Se aplica la regla de inclusión a todas las filas que cumplen la condición.
+    df_copy.loc[mascara_spei, class_col] = include_value
+
+    # --- REGLA 2: EXCLUIR PAGOS DE NÓMINA (CRITERIO EXTRA) ---
+    # Si el parámetro está activado, se aplica la segunda regla independiente.
+    if excluir_pagos_nomina:
+        # Condición: La descripción contiene alguna palabra clave de nómina.
+        palabras_nomina = r'nomi(na)?|quincena|aguinaldo|percepciones|sueldos|salarios'
+        mascara_nomina = df_copy[desc_col].str.contains(palabras_nomina, case=False, na=False)
+        
+        # Se aplica la regla de exclusión a todas las filas que cumplen la condición.
+        df_copy.loc[mascara_nomina, class_col] = exclude_value
+        
+    return df_copy
